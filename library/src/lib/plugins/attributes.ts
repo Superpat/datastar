@@ -10,9 +10,9 @@ export const BindAttributePlugin: AttributePlugin = {
   mustNotEmptyExpression: true,
 
   onLoad: (ctx: AttributeContext) => {
-    return ctx.reactivity.effect(() => {
+    return ctx.reactivity.effect(async () => {
       const key = kebabize(ctx.key)
-      const value = ctx.expressionFn(ctx)
+      const value = await ctx.expressionFn(ctx)
       const v = `${value}`
       if (!v || v === 'false' || v === 'null' || v === 'undefined') {
         ctx.el.removeAttribute(key)
@@ -44,9 +44,13 @@ export const TwoWayBindingModelPlugin: AttributePlugin = {
   allowedTagRegexps: new Set(['input', 'textarea', 'select', 'checkbox', 'radio']),
   // bypassExpressionFunctionCreation: () => true,
   onLoad: (ctx: AttributeContext) => {
-    const { el, expression: signalName } = ctx
+    const { el, expression } = ctx
     const signal = ctx.expressionFn(ctx)
     const tnl = el.tagName.toLowerCase()
+
+    if (expression.startsWith('ctx.store().ctx.store()')) {
+      throw new Error(`Model attribute on #${el.id} must have a signal name, you probably prefixed with $ by accident`)
+    }
 
     const isInput = tnl.includes('input')
     const isSelect = tnl.includes('select')
@@ -60,6 +64,7 @@ export const TwoWayBindingModelPlugin: AttributePlugin = {
       throw new Error('Element must be input, select, textarea, checkbox or radio')
     }
 
+    const signalName = expression.replaceAll('ctx.store().', '')
     if (isRadio) {
       const name = el.getAttribute('name')
       if (!name?.length) {
@@ -83,7 +88,7 @@ export const TwoWayBindingModelPlugin: AttributePlugin = {
           input.checked = `${v}` === input.value
         }
       } else if (isFile) {
-        throw new Error('File input reading is not supported yet')
+        // File input reading from a signal is not supported yet
       } else if (hasValue) {
         el.value = `${v}`
       } else {
@@ -92,46 +97,48 @@ export const TwoWayBindingModelPlugin: AttributePlugin = {
     }
     const cleanupSetInputFromSignal = ctx.reactivity.effect(setInputFromSignal)
 
-    const setSignalFromInput = () => {
+    const setSignalFromInput = async () => {
       if (isFile) {
-        const [f] = (el as any)?.files || []
-        if (!f) {
-          signal.value = ''
-          return
-        }
-        const reader = new FileReader()
-        const s = ctx.store()
-        reader.onload = () => {
-          if (typeof reader.result !== 'string') {
-            throw new Error('Unsupported type')
+        return await new Promise((resolve) => {
+          const [f] = (el as any)?.files || []
+          if (!f) {
+            signal.value = ''
+            return
           }
+          const reader = new FileReader()
+          const s = ctx.store()
+          reader.onload = () => {
+            if (typeof reader.result !== 'string') {
+              throw new Error('Unsupported type')
+            }
 
-          const match = reader.result.match(dataURIRegex)
-          if (!match?.groups) {
-            throw new Error('Invalid data URI')
+            const match = reader.result.match(dataURIRegex)
+            if (!match?.groups) {
+              throw new Error('Invalid data URI')
+            }
+            const { mime, contents } = match.groups
+            signal.value = contents
+
+            const mimeName = `${signalName}Mime`
+            if (mimeName in s) {
+              const mimeSignal = s[`${mimeName}`] as Signal<string>
+              mimeSignal.value = mime
+            }
           }
-          const { mime, contents } = match.groups
-          signal.value = contents
+          reader.onloadend = () => resolve(void 0)
+          reader.readAsDataURL(f)
 
-          const mimeName = `${signalName}Mime`
-          if (mimeName in s) {
-            const mimeSignal = s[`${mimeName}`] as Signal<string>
-            mimeSignal.value = mime
+          const nameName = `${signalName}Name`
+          if (nameName in s) {
+            const nameSignal = s[`${nameName}`] as Signal<string>
+            nameSignal.value = f.name
           }
-        }
-        reader.readAsDataURL(f)
-
-        const nameName = `${signalName}Name`
-        if (nameName in s) {
-          const nameSignal = s[`${nameName}`] as Signal<string>
-          nameSignal.value = f.name
-        }
-
-        return
+        })
       }
 
       const current = signal.value
       const input = el as HTMLInputElement
+
       if (typeof current === 'number') {
         signal.value = Number(input.value)
       } else if (typeof current === 'string') {
@@ -238,27 +245,10 @@ export const EventPlugin: AttributePlugin = {
   },
 }
 
-// Sets the focus of the element
-export const FocusPlugin: AttributePlugin = {
-  prefix: 'focus',
-  mustHaveEmptyKey: true,
-  mustHaveEmptyExpression: true,
-
-  onLoad: (ctx: AttributeContext) => {
-    if (!ctx.el.tabIndex) {
-      ctx.el.setAttribute('tabindex', '0')
-    }
-    ctx.el.focus()
-    ctx.el.scrollIntoView({ block: 'center', inline: 'center' })
-    return () => ctx.el.blur()
-  },
-}
-
 export const AttributePlugins: AttributePlugin[] = [
   BindAttributePlugin,
   TwoWayBindingModelPlugin,
   TextPlugin,
-  FocusPlugin,
   EventPlugin,
 ]
 
